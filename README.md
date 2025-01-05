@@ -49,4 +49,3 @@ See [Program.cs](https://github.com/adamfoneil/BlobBackup/blob/master/ConsoleApp
 - I didn't really need to use a [ServiceCollection](https://github.com/adamfoneil/BlobBackup/blob/master/ConsoleApp/Program.cs#L21) as if this were a web app, but I did anyway. Not completely sure why.
 - I use [local dev secrets](https://github.com/adamfoneil/BlobBackup/blob/master/ConsoleApp/Program.cs#L9) to store connection strings, and make this safe to open source. In a more robust app, these would need to be in Key Vault or something.
 - I still struggle with configuring Serilog, and logging in general. I'm completely in favor of using `ILogger<T>` everywhere to avoid a concrete logging dependency. But I have to look at examples and documentation of how to set it up, like every single time I do it.
-- 
