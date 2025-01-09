@@ -22,11 +22,13 @@ public abstract class BackupProcess(
 
 	public async Task<Result> ExecuteAsync(CancellationToken cancellationToken)
 	{
-		List<string> downloads = [];
+		List<(string Container, string Name, DateTime Timestamp)> downloads = [];
 		List<(string, string)> errors = [];
 
 		_logger.LogDebug("Getting containers...");
 		var containers = await GetContainerNamesAsync();
+
+		Dictionary<(string Container, string Name), DateTime> database = GetFileDatabase(_localPath);
 
 		foreach (var container in containers)
 		{
@@ -36,6 +38,7 @@ public abstract class BackupProcess(
 			{
 				var localFile = Path.Combine(_localPath, container, item.Name);				
 
+				// todo: integrate database check
 				var (shouldBackup, exists, reason, timestamp) = ShouldBackup(localFile, item.Properties.LastModified);
 
 				if (!shouldBackup)
@@ -65,7 +68,7 @@ public abstract class BackupProcess(
 
 					await blobClient.DownloadToAsync(localFile, cancellationToken);
 					File.SetLastWriteTimeUtc(localFile, timestamp);
-					downloads.Add(localFile);
+					downloads.Add((container, item.Name, timestamp));
 
 					var (shouldContinue, exitReason) = ShouldContinue;
 
@@ -91,10 +94,15 @@ public abstract class BackupProcess(
 		};
 	}
 
+	private Dictionary<(string Container, string Name), DateTime> GetFileDatabase(string localPath)
+	{
+		throw new NotImplementedException();
+	}
+
 	public class Result
 	{
 		public required string[] Containers { get; init; }
-		public required string[] Downloads { get; init; }
+		public required (string Container, string Name, DateTime Timestamp)[] Downloads { get; init; }
 		public required (string, string)[] Errors { get; init; }
 	}
 
