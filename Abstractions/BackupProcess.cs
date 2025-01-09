@@ -30,6 +30,7 @@ public abstract class BackupProcess(
 
 		foreach (var container in containers)
 		{
+			_logger.LogInformation("Processing container {Container}...", container);
 			var containerClient = new BlobContainerClient(_connectionString, container);
 			await foreach (var item in containerClient.GetBlobsAsync(BlobTraits, BlobStates, BlobPrefix, cancellationToken))
 			{
