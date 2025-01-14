@@ -27,20 +27,7 @@ var services = new ServiceCollection()
 var backup = services.GetRequiredService<ApplicationImageBackup>();
 var result = await backup.ExecuteAsync(default);
 
-await SaveResultAsync(options.LocalPath, result);
-
-static async Task SaveResultAsync(string path, BackupProcess.Result result)
-{
-	var filename = NextFilename(path, $"result-{DateTime.Today:yy-MM-dd}", ".json");
-	var json = JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true });
-	await File.WriteAllTextAsync(filename, json);
-}
+await backup.SaveResultAsync(result);
 
 static string LogFile(string path) => Path.Combine(path, "serilog.txt");
 
-static string NextFilename(string path, string prefix, string extension)
-{
-	var files = Directory.GetFiles(path, $"{prefix}*{extension}");
-	var last = files.Select(file => int.Parse(Path.GetFileNameWithoutExtension(file)[prefix.Length..])).Order().LastOrDefault();
-	return Path.Combine(path, $"{prefix}-{last + 1}{extension}");
-}

@@ -1,6 +1,7 @@
 ﻿using Azure.Storage.Blobs;
 using Azure.Storage.Blobs.Models;
 using Microsoft.Extensions.Logging;
+using System.Text.Json;
 
 namespace Abstractions;
 
@@ -22,24 +23,24 @@ public abstract class BackupProcess(
 
 	public async Task<Result> ExecuteAsync(CancellationToken cancellationToken)
 	{
-		List<(string Container, string Name, DateTime Timestamp)> downloads = [];
-		List<(string, string)> errors = [];
+		List<Result.File> downloads = [];
+		List<Result.Error> errors = [];
 
 		_logger.LogDebug("Getting containers...");
 		var containers = await GetContainerNamesAsync();
 
-		Dictionary<(string Container, string Name), DateTime> database = GetFileDatabase(_localPath);
+		var fileLog = await GetFileLogAsync();
 
 		foreach (var container in containers)
 		{
 			_logger.LogInformation("Processing container {Container}...", container);
+		
 			var containerClient = new BlobContainerClient(_connectionString, container);
 			await foreach (var item in containerClient.GetBlobsAsync(BlobTraits, BlobStates, BlobPrefix, cancellationToken))
 			{
 				var localFile = Path.Combine(_localPath, container, item.Name);				
-
-				// todo: integrate database check
-				var (shouldBackup, exists, reason, timestamp) = ShouldBackup(localFile, item.Properties.LastModified);
+				
+				var (shouldBackup, exists, reason, timestamp) = ShouldBackup(fileLog, localFile, item.Properties.LastModified);
 
 				if (!shouldBackup)
 				{					
@@ -68,7 +69,7 @@ public abstract class BackupProcess(
 
 					await blobClient.DownloadToAsync(localFile, cancellationToken);
 					File.SetLastWriteTimeUtc(localFile, timestamp);
-					downloads.Add((container, item.Name, timestamp));
+					downloads.Add(new Result.File() { LocalFile = localFile, Timestamp = timestamp });
 
 					var (shouldContinue, exitReason) = ShouldContinue;
 
@@ -81,7 +82,7 @@ public abstract class BackupProcess(
 				catch (Exception exc)
 				{
 					_logger.LogError(exc, "Error downloading {BlobName}", item.Name);
-					errors.Add((item.Name, exc.Message));
+					errors.Add(new Result.Error() { BlobName = item.Name, Message = exc.Message });
 				}
 			}
 		}
@@ -94,16 +95,73 @@ public abstract class BackupProcess(
 		};
 	}
 
-	private Dictionary<(string Container, string Name), DateTime> GetFileDatabase(string localPath)
+	private async Task<Dictionary<string, DateTime>> GetFileLogAsync()
 	{
-		throw new NotImplementedException();
+		List<Result> pastResults = [];
+		var filenames = Directory.GetFiles(_localPath, "result-*.json");
+
+		if (!filenames.Any())
+		{
+			filenames = [ await RebuildFileLogAsync() ];
+		}
+
+		foreach (var filename in filenames) 
+		{
+			var json = File.ReadAllText(filename);
+			var result = JsonSerializer.Deserialize<Result>(json) ?? throw new Exception("couldn't deserialize");
+			pastResults.Add(result);
+		}
+
+		var allResults = pastResults.SelectMany(result => result.Downloads).ToArray();
+
+		return allResults
+			.GroupBy(item => item.LocalFile)
+			.Select(grp => grp.MaxBy(item => item.Timestamp))
+			.ToDictionary(item => item.LocalFile, item => item.Timestamp);
+	}
+
+	private async Task<string> RebuildFileLogAsync()
+	{
+		var folders = Directory.GetDirectories(_localPath);
+		var files = folders.SelectMany(folder => Directory.GetFiles(folder, "*", SearchOption.AllDirectories)).ToArray();
+		var timestamps = files.Select(file => new Result.File() { LocalFile = file, Timestamp = File.GetLastWriteTimeUtc(file) }).ToArray();
+		var containers = folders.Select(Path.GetFileName).ToArray()!;
+
+		var result = new Result()
+		{ 
+			Containers = containers!, 
+			Downloads = timestamps,
+			Errors = []
+		};
+
+		return await SaveResultAsync(result);
+	}
+
+	public async Task<string> SaveResultAsync(Result result)
+	{
+		var filename = ResultFilename(_localPath);
+		var json = JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true });
+		await File.WriteAllTextAsync(filename, json);
+		return filename;
 	}
 
 	public class Result
 	{
 		public required string[] Containers { get; init; }
-		public required (string Container, string Name, DateTime Timestamp)[] Downloads { get; init; }
-		public required (string, string)[] Errors { get; init; }
+		public required File[] Downloads { get; init; }
+		public required Error[] Errors { get; init; }
+
+		public class File
+		{
+			public required string LocalFile { get; init; }
+			public required DateTime Timestamp { get; init; }
+		}
+
+		public class Error
+		{
+			public required string BlobName { get; init; }
+			public required string Message { get; init; }
+		}
 	}
 
 	private static void EnsurePathExists(string localFile)
@@ -112,8 +170,10 @@ public abstract class BackupProcess(
 		if (!Directory.Exists(folder)) Directory.CreateDirectory(folder);
 	}
 
-	private static (bool Result, bool Exists, string? Reason, DateTime timestamp) ShouldBackup(string localFile, DateTimeOffset? blobLastModified)
+	private static (bool Result, bool Exists, string? Reason, DateTime timestamp) ShouldBackup(Dictionary<string, DateTime> fileLog, string localFile, DateTimeOffset? blobLastModified)
 	{
+		if (fileLog.TryGetValue(localFile, out var lastModified) && lastModified >= blobLastModified) return (false, true, "log shows local file is latest version", lastModified);
+
 		if (!File.Exists(localFile)) return (true, false, "local file missing", DateTime.UtcNow);
 
 		if (blobLastModified is null) return (true, true, "blob last modified date is null", DateTime.UtcNow);
@@ -123,5 +183,14 @@ public abstract class BackupProcess(
 		if (blobLastModified.Value.UtcDateTime > fileLastModified) return (true, true, "blob is newer than local file", blobLastModified.Value.UtcDateTime);
 
 		return (false, true, "local file is latest version", DateTime.UtcNow);
+	}
+
+	public static string ResultFilename(string path) => NextFilename(path, $"result-{DateTime.Today:yy-MM-dd}", ".json");
+
+	public static string NextFilename(string path, string prefix, string extension)
+	{
+		var files = Directory.GetFiles(path, $"{prefix}*{extension}");
+		var last = files.Select(file => int.Parse(Path.GetFileNameWithoutExtension(file)[prefix.Length..])).Order().LastOrDefault();
+		return Path.Combine(path, $"{prefix}-{last + 1}{extension}");
 	}
 }
